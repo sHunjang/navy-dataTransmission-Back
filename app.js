@@ -9,6 +9,7 @@ const { Worker, isMainThread } = require("worker_threads");
 
 const app = express();
 const port = 8080;
+const serverURL = "localhost";
 
 app.use(cors());
 app.use(express.json());
@@ -133,8 +134,8 @@ app.post("/send-multiple", async (req, res) => {
 });
 
 // 서버 실행 및 WebSocket 업그레이드 처리
-app.server = app.listen(port, () => {
-    console.log(`서버가 ${port} 포트에서 실행 중입니다.`);
+app.server = app.listen(port, serverURL, () => {
+    console.log(`서버가 ${serverURL}:${port} 포트에서 실행 중입니다.`);
 });
 
 app.server.on("upgrade", (request, socket, head) => {
