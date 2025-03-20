@@ -13,13 +13,14 @@ const port = 8080;
 app.use(cors());
 app.use(express.json());
 
-// Multer 설정: 업로드된 파일들을 "uploads" 폴더에 저장
+// multer 설정: 파일들을 "uploads" 폴더에 저장
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
-        cb(null, "uploads/"); // 파일 저장 폴더 (미리 생성)
+        cb(null, "uploads/"); // 업로드 폴더
     },
     filename: (req, file, cb) => {
-        cb(null, file.originalname); // 원본 파일명을 그대로 사용
+        // 파일 원본명을 그대로 사용 (원본 파일명이 displayName으로 사용됨)
+        cb(null, file.originalname);
     }
 });
 const upload = multer({ storage });
@@ -27,16 +28,17 @@ const upload = multer({ storage });
 // 업로드된 파일들을 정적 파일로 서비스 (다운로드 URL 제공)
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
-// 파일 업로드 엔드포인트 (여러 파일 업로드)
+// 다중 파일 업로드 엔드포인트
 app.post("/upload", upload.array("files", 10), (req, res) => {
     if (!req.files || req.files.length === 0) {
         return res.status(400).json({ message: "파일 업로드 실패" });
     }
-    // 각 파일에 대해 다운로드 URL 생성 (한글 파일명은 URL 인코딩)
-    const downloadUrls = req.files.map(file => {
-        return `http://${req.headers.host}/uploads/${encodeURIComponent(file.filename)}`;
-    });
-    res.json({ message: "파일 업로드 완료", downloadUrls });
+    // 각 파일에 대해 다운로드 URL과 원본 파일명을 생성
+    const downloadFiles = req.files.map(file => ({
+        url: `http://${req.headers.host}/uploads/${encodeURIComponent(file.filename)}`,
+        displayName: file.originalname
+    }));
+    res.json({ message: "파일 업로드 완료", downloadFiles });
 });
 
 // WebSocket 서버 설정 (옵션)
