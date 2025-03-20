@@ -1,7 +1,9 @@
+// app.js
 const express = require("express");
 const cors = require("cors");
 const fs = require("fs").promises;
 const path = require("path");
+const multer = require("multer");           // multer 추가
 const WebSocket = require("ws");
 const { Worker, isMainThread } = require("worker_threads");
 
@@ -10,6 +12,32 @@ const port = 8080;
 
 app.use(cors());
 app.use(express.json());
+
+// Multer 설정: 업로드된 파일들을 "uploads" 폴더에 저장
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        cb(null, "uploads/"); // 파일 저장 폴더 (미리 생성)
+    },
+    filename: (req, file, cb) => {
+        cb(null, file.originalname); // 원본 파일명을 그대로 사용
+    }
+});
+const upload = multer({ storage });
+
+// 업로드된 파일들을 정적 파일로 서비스 (다운로드 URL 제공)
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+
+// 파일 업로드 엔드포인트 (여러 파일 업로드)
+app.post("/upload", upload.array("files", 10), (req, res) => {
+    if (!req.files || req.files.length === 0) {
+        return res.status(400).json({ message: "파일 업로드 실패" });
+    }
+    // 각 파일에 대해 다운로드 URL 생성 (한글 파일명은 URL 인코딩)
+    const downloadUrls = req.files.map(file => {
+        return `http://${req.headers.host}/uploads/${encodeURIComponent(file.filename)}`;
+    });
+    res.json({ message: "파일 업로드 완료", downloadUrls });
+});
 
 // WebSocket 서버 설정 (옵션)
 const wss = new WebSocket.Server({ noServer: true });
@@ -68,6 +96,7 @@ function processFilesInWorker(fileNames, threads) {
             if (code !== 0) reject(new Error(`Worker stopped with exit code ${code}`));
         });
 
+        // 전달 객체의 키 이름을 fileNames와 threads로 설정합니다.
         worker.postMessage({ fileNames, threads });
     });
 }
@@ -114,5 +143,5 @@ app.server.on("upgrade", (request, socket, head) => {
 
 // 워커 스레드 코드는 worker.js에 따로 있음
 if (!isMainThread) {
-    // 이 부분은 실행되지 않음. 워커 코드는 worker.js에서 관리.
+    // 이 부분은 실행되지 않습니다. 워커 스레드 코드는 workers/worker.js 파일에서 관리됩니다.
 }
