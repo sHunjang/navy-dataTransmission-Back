@@ -1,4 +1,3 @@
-// app.js
 const express = require("express");
 const cors = require("cors");
 const fs = require("fs").promises;
@@ -9,7 +8,6 @@ const { Worker, isMainThread } = require("worker_threads");
 
 const app = express();
 const port = 8080;
-const serverURL = "localhost";
 
 app.use(cors());
 app.use(express.json());
@@ -17,7 +15,7 @@ app.use(express.json());
 // multer 설정: 파일들을 "uploads" 폴더에 저장
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
-        cb(null, "uploads/"); // 업로드 폴더
+        cb(null, "uploads/"); // 업로드 폴더 (미리 생성 필요)
     },
     filename: (req, file, cb) => {
         // 파일 원본명을 그대로 사용 (원본 파일명이 displayName으로 사용됨)
@@ -44,7 +42,6 @@ app.post("/upload", upload.array("files", 10), (req, res) => {
 
 // WebSocket 서버 설정 (옵션)
 const wss = new WebSocket.Server({ noServer: true });
-
 wss.on("connection", (ws) => {
     console.log("WebSocket 클라이언트와 연결됨");
     ws.on("message", (message) => {
@@ -133,9 +130,43 @@ app.post("/send-multiple", async (req, res) => {
     }
 });
 
+// 실험 결과 자동 저장 엔드포인트
+app.post("/save-result", async (req, res) => {
+    try {
+        const resultData = req.body; // 실험 결과 데이터
+        const { experiment_datetime, file_count, single_thread_time, multi_thread_results } = resultData;
+        const lines = [];
+        lines.push("[실험 일시]");
+        lines.push(experiment_datetime);
+        lines.push("");
+        lines.push("[실험 조건]");
+        lines.push(`파일 수: ${file_count}개`);
+        lines.push("");
+        lines.push("[결과]");
+        lines.push(`- 단일 스레드 처리 시간: ${single_thread_time}ms`);
+        for (const threadCount in multi_thread_results) {
+            lines.push(`- 멀티 스레드 처리 시간 (${threadCount} threads): ${multi_thread_results[threadCount]}ms`);
+        }
+        const content = lines.join("\n");
+
+        // 결과 저장 폴더 (results) 생성 (없으면 자동 생성)
+        const resultsDir = path.resolve(__dirname, "results");
+        await fs.mkdir(resultsDir, { recursive: true });
+        // 타임스탬프를 포함한 파일명 생성
+        const timestamp = new Date().toISOString().replace(/[:.-]/g, "");
+        const fileName = `experiment_result_${timestamp}.txt`;
+        const filePath = path.join(resultsDir, fileName);
+        await fs.writeFile(filePath, content, { encoding: "utf-8" });
+        res.json({ message: "실험 결과 저장 완료", filePath });
+    } catch (error) {
+        console.error("실험 결과 저장 중 오류 발생:", error);
+        res.status(500).json({ message: "실험 결과 저장 실패", error: error.message });
+    }
+});
+
 // 서버 실행 및 WebSocket 업그레이드 처리
-app.server = app.listen(port, serverURL, () => {
-    console.log(`서버가 ${serverURL}:${port} 포트에서 실행 중입니다.`);
+app.server = app.listen(port, "0.0.0.0", () => {
+    console.log(`서버가 ${port} 포트에서 실행 중입니다.`);
 });
 
 app.server.on("upgrade", (request, socket, head) => {

@@ -1,4 +1,3 @@
-// workers/worker.js
 const { parentPort } = require("worker_threads");
 const fs = require("fs").promises;
 const path = require("path");
