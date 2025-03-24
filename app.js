@@ -2,12 +2,13 @@ const express = require("express");
 const cors = require("cors");
 const fs = require("fs").promises;
 const path = require("path");
-const multer = require("multer");           // multer 추가
+const multer = require("multer"); // multer 추가
 const WebSocket = require("ws");
 const { Worker, isMainThread } = require("worker_threads");
 
 const app = express();
 const port = 8080;
+const serverURL = "0.0.0.0";
 
 app.use(cors());
 app.use(express.json());
@@ -103,14 +104,21 @@ function processFilesInWorker(fileNames, threads) {
 
 // 단일 스레드 전송 엔드포인트 (순차 처리)
 app.post("/send-single", async (req, res) => {
-    const fileNames = req.body;
+    const { fileNames } = req.body;
+    if (!fileNames || !Array.isArray(fileNames)) {
+        return res.status(400).json({ message: "파일 이름 배열이 필요합니다." });
+    }
     console.log("단일 스레드 전송, 파일 이름들:", fileNames);
     try {
+        const startTime = Date.now();
         for (let fileName of fileNames) {
             const result = await processFileAsync(fileName);
             console.log(result);
         }
-        res.json({ message: "단일 스레드 전송 완료" });
+        const endTime = Date.now();
+        const processingTime = endTime - startTime;
+        console.log("총 처리 시간:", processingTime, "ms");
+        res.json({ message: "단일 스레드 전송 완료", processingTime: `${processingTime} ms` });
     } catch (error) {
         console.error("단일 스레드 전송 중 오류 발생:", error);
         res.status(500).json({ message: "전송 실패", error: error.message });
@@ -120,10 +128,21 @@ app.post("/send-single", async (req, res) => {
 // 멀티 스레드 전송 엔드포인트 (병렬 처리)
 app.post("/send-multiple", async (req, res) => {
     const { fileNames, threads } = req.body;
+    if (!fileNames || !Array.isArray(fileNames)) {
+        return res.status(400).json({ message: "파일 이름 배열이 필요합니다." });
+    }
     console.log("멀티 스레드 전송, 파일 이름들:", fileNames, "스레드 수:", threads);
     try {
+        const startTime = Date.now();
         const result = await processFilesInWorker(fileNames, threads);
-        res.json({ message: "멀티 스레드 전송 완료", results: result });
+        const endTime = Date.now();
+        const processingTime = endTime - startTime;
+        console.log("총 처리 시간:", processingTime, "ms");
+        res.json({ 
+            message: "멀티 스레드 전송 완료", 
+            results: result, 
+            processingTime: `${processingTime} ms` 
+        });
     } catch (error) {
         console.error("멀티 스레드 전송 중 오류 발생:", error);
         res.status(500).json({ message: "전송 실패", error: error.message });
@@ -133,6 +152,7 @@ app.post("/send-multiple", async (req, res) => {
 // 실험 결과 자동 저장 엔드포인트
 app.post("/save-result", async (req, res) => {
     try {
+        console.log("실험 결과 저장 요청:", req.body);
         const resultData = req.body; // 실험 결과 데이터
         const { experiment_datetime, file_count, single_thread_time, multi_thread_results } = resultData;
         const lines = [];
@@ -149,14 +169,14 @@ app.post("/save-result", async (req, res) => {
         }
         const content = lines.join("\n");
 
-        // 결과 저장 폴더 (results) 생성 (없으면 자동 생성)
         const resultsDir = path.resolve(__dirname, "results");
+        console.log("결과 저장 폴더 경로:", resultsDir);
         await fs.mkdir(resultsDir, { recursive: true });
-        // 타임스탬프를 포함한 파일명 생성
         const timestamp = new Date().toISOString().replace(/[:.-]/g, "");
-        const fileName = `experiment_result_${timestamp}.txt`;
+        const fileName = `Result_${timestamp}.txt`;
         const filePath = path.join(resultsDir, fileName);
         await fs.writeFile(filePath, content, { encoding: "utf-8" });
+        console.log("실험 결과 파일 저장 완료:", filePath);
         res.json({ message: "실험 결과 저장 완료", filePath });
     } catch (error) {
         console.error("실험 결과 저장 중 오류 발생:", error);
@@ -165,7 +185,7 @@ app.post("/save-result", async (req, res) => {
 });
 
 // 서버 실행 및 WebSocket 업그레이드 처리
-app.server = app.listen(port, "0.0.0.0", () => {
+app.server = app.listen(port, serverURL, () => {
     console.log(`서버가 ${port} 포트에서 실행 중입니다.`);
 });
 
