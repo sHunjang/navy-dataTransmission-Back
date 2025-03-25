@@ -2,18 +2,22 @@ const { parentPort } = require("worker_threads");
 const fs = require("fs").promises;
 const path = require("path");
 
-// "files" 폴더와 "files2" 폴더에서 파일 존재 여부를 확인하는 함수
+// 파일 존재 여부를 확인하는 함수
 const getFilePath = async (fileName) => {
-    // 우선 "files" 폴더에서 확인
-    let filePath = path.resolve(__dirname, "..", "files", fileName);
+    let filePath = path.resolve(__dirname, "..", "uploads", fileName);
     try {
         await fs.access(filePath);
         return filePath;
     } catch (error) {
-        // "files"에 없으면 "files2" 폴더에서 확인
-        filePath = path.resolve(__dirname, "..", "files2", fileName);
-        await fs.access(filePath);
-        return filePath;
+        filePath = path.resolve(__dirname, "..", "files", fileName);
+        try {
+            await fs.access(filePath);
+            return filePath;
+        } catch (error) {
+            filePath = path.resolve(__dirname, "..", "files2", fileName);
+            await fs.access(filePath);
+            return filePath;
+        }
     }
 };
 

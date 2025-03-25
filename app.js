@@ -1,8 +1,11 @@
+// app.js
 const express = require("express");
 const cors = require("cors");
 const fs = require("fs").promises;
+const fsSync = require("fs"); // 스트림 생성 등 동기적 기능용
 const path = require("path");
-const multer = require("multer"); // multer 추가
+const multer = require("multer");
+const archiver = require("archiver"); // 압축 라이브러리
 const WebSocket = require("ws");
 const { Worker, isMainThread } = require("worker_threads");
 
@@ -19,26 +22,62 @@ const storage = multer.diskStorage({
         cb(null, "uploads/"); // 업로드 폴더 (미리 생성 필요)
     },
     filename: (req, file, cb) => {
-        // 파일 원본명을 그대로 사용 (원본 파일명이 displayName으로 사용됨)
+        // 파일 원본명을 그대로 사용
         cb(null, file.originalname);
     }
 });
-const upload = multer({ storage });
+// upload.fields()를 사용하여 "files" 필드로 최대 10개 파일 허용
+const upload = multer({ storage }).fields([{ name: "files" }]);
 
 // 업로드된 파일들을 정적 파일로 서비스 (다운로드 URL 제공)
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
-// 다중 파일 업로드 엔드포인트
-app.post("/upload", upload.array("files", 10), (req, res) => {
-    if (!req.files || req.files.length === 0) {
-        return res.status(400).json({ message: "파일 업로드 실패" });
-    }
-    // 각 파일에 대해 다운로드 URL과 원본 파일명을 생성
-    const downloadFiles = req.files.map(file => ({
-        url: `http://${req.headers.host}/uploads/${encodeURIComponent(file.filename)}`,
-        displayName: file.originalname
-    }));
-    res.json({ message: "파일 업로드 완료", downloadFiles });
+// 다중 파일 업로드 및 압축 엔드포인트
+app.post("/upload", (req, res) => {
+    upload(req, res, async (err) => {
+        if (err) {
+            console.error("multer 에러:", err);
+            return res.status(400).json({ message: "파일 업로드 실패", error: err.message });
+        }
+        if (!req.files || !req.files["files"] || req.files["files"].length === 0) {
+            return res.status(400).json({ message: "파일 업로드 실패" });
+        }
+
+        // zip 파일 생성
+        const zipFileName = `archive_${Date.now()}.zip`;
+        const zipFilePath = path.join(__dirname, "uploads", zipFileName);
+        const output = fsSync.createWriteStream(zipFilePath);
+        const archive = archiver("zip", { zlib: { level: 9 } });
+
+        output.on("close", async () => {
+            console.log("Zip 파일 생성 완료, 총 크기:", archive.pointer() + " bytes");
+
+            for (const file of req.files["files"]) {
+                try {
+                    await fs.unlink(file.path);
+                } catch (delErr) {
+                    console.error(`${file.path}`, delErr);
+                }
+            }
+
+            const downloadFiles = [{
+                url: `http://${req.headers.host}/uploads/${encodeURIComponent(zipFileName)}`,
+                displayName: zipFileName
+            }];
+            res.json({ message: "파일 업로드 및 압축 완료", downloadFiles });
+        });
+
+        archive.on("error", (err) => {
+            console.error("압축 중 오류 발생:", err);
+            return res.status(500).json({ message: "압축 실패", error: err.message });
+        });
+
+        archive.pipe(output);
+        req.files["files"].forEach(file => {
+            archive.file(file.path, { name: file.originalname });
+        });
+        await archive.finalize();
+    });
 });
 
 // WebSocket 서버 설정 (옵션)
@@ -54,22 +93,26 @@ wss.on("connection", (ws) => {
     });
 });
 
-// "files" 폴더와 "files2" 폴더에서 파일 존재 여부를 확인하는 함수
+// getFilePath 함수 수정: 우선 "uploads" 폴더에서 파일을 확인하도록 변경
 const getFilePath = async (fileName) => {
-    // 우선 "files" 폴더에서 확인
-    let filePath = path.resolve(__dirname, "files", fileName);
+    let filePath = path.resolve(__dirname, "uploads", fileName);
     try {
         await fs.access(filePath);
         return filePath;
     } catch (error) {
-        // "files"에 없으면 "files2" 폴더에서 확인
-        filePath = path.resolve(__dirname, "files2", fileName);
-        await fs.access(filePath);
-        return filePath;
+        filePath = path.resolve(__dirname, "files", fileName);
+        try {
+            await fs.access(filePath);
+            return filePath;
+        } catch (error) {
+            filePath = path.resolve(__dirname, "files2", fileName);
+            await fs.access(filePath);
+            return filePath;
+        }
     }
 };
 
-// 단일 스레드 파일 처리 함수 (순차 처리)
+// 단일 스레드 파일 처리 함수
 const processFileAsync = async (fileName) => {
     try {
         const filePath = await getFilePath(fileName);
@@ -81,7 +124,7 @@ const processFileAsync = async (fileName) => {
     }
 };
 
-// 멀티 스레드 처리 함수 (worker_threads 사용)
+// 멀티 스레드 처리 함수
 function processFilesInWorker(fileNames, threads) {
     return new Promise((resolve, reject) => {
         const workerPath = path.resolve(__dirname, "workers", "worker.js");
@@ -90,19 +133,17 @@ function processFilesInWorker(fileNames, threads) {
         worker.on("message", (result) => {
             resolve(result);
         });
-
         worker.on("error", reject);
-
         worker.on("exit", (code) => {
             if (code !== 0) reject(new Error(`Worker stopped with exit code ${code}`));
         });
 
-        // 전달 객체의 키 이름을 fileNames와 threads로 설정합니다.
         worker.postMessage({ fileNames, threads });
     });
 }
 
 // 단일 스레드 전송 엔드포인트 (순차 처리)
+// 클라이언트는 { fileNames: [...] } 형태로 데이터를 전송
 app.post("/send-single", async (req, res) => {
     const { fileNames } = req.body;
     if (!fileNames || !Array.isArray(fileNames)) {
@@ -126,6 +167,7 @@ app.post("/send-single", async (req, res) => {
 });
 
 // 멀티 스레드 전송 엔드포인트 (병렬 처리)
+// 클라이언트는 { fileNames: [...], threads: 숫자 } 형태로 데이터를 전송
 app.post("/send-multiple", async (req, res) => {
     const { fileNames, threads } = req.body;
     if (!fileNames || !Array.isArray(fileNames)) {
@@ -138,10 +180,10 @@ app.post("/send-multiple", async (req, res) => {
         const endTime = Date.now();
         const processingTime = endTime - startTime;
         console.log("총 처리 시간:", processingTime, "ms");
-        res.json({ 
-            message: "멀티 스레드 전송 완료", 
-            results: result, 
-            processingTime: `${processingTime} ms` 
+        res.json({
+            message: "멀티 스레드 전송 완료",
+            results: result,
+            processingTime: `${processingTime} ms`
         });
     } catch (error) {
         console.error("멀티 스레드 전송 중 오류 발생:", error);
